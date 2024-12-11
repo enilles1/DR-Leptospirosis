@@ -1,1 +1,221 @@
+#NOTE: This is the code used for the serocatalytic models presented in the manuscript. This script uses age as a continuous variable. However, for de-identification purposes, the dataset provided has age aggregated. Therefore, the provided code will need to be modified to account for this. 
 
+```
+# Force of infection
+## Catalytic model
+```{r}
+mcmcModelRandomSampler <- function(numberOfSamples, mcmcMatrix, ageVector){
+  for (i in 1:numberOfSamples){
+    # Specify random number to sample from mcmc chain for parameter estimates
+    randomNumber <- floor(runif(1, min = 1, max = nrow(mcmcMatrix)))
+    lambdaSample <- mcmcMatrix[randomNumber,2]
+    deltaSample <- mcmcMatrix[randomNumber,1]
+    # Run the model with new esitmates
+    newRow <- (lambdaSample / (lambdaSample+deltaSample)) *(1 - exp(-ageVector*(lambdaSample+deltaSample)))
+    # Add this to a new matrix, where each row is a sample, and each column is an age
+    outDf[i,] <- newRow
+  }
+  outDf
+}
+
+mcmcRandomSamplerCat <- function(numberOfSamples, mcmcMatrix, ageVector, ageTotals){
+  
+  outDf <- matrix(NA,nrow=numberOfSamples, ncol = length(ageVector))
+  
+  for (i in 1:numberOfSamples){
+    randomNumber <- floor(runif(1, min = 1, max = nrow(mcmcMatrix)))
+    
+    lambdaSample <- mcmcMatrix[randomNumber,1]
+    
+    newRow <- 1 - exp(-ageVector*(lambdaSample))
+    updateRow <- c()
+    for(j in 1:length(ageTotals)){
+      randomlySampleBinomialDis <- rbinom(1,size = ageTotals[j],prob = newRow[j])
+      if(randomlySampleBinomialDis > 0){
+        result <- randomlySampleBinomialDis / ageTotals[j]
+      } else {
+        result <- 0
+      }
+      updateRow[j] <- result
+    }
+    rbinom(1,20,0.03)
+    outDf[i,] <- updateRow
+  }
+  outDf
+}
+
+
+mcmcRandomSampler <- function(numberOfSamples, mcmcMatrix, ageVector, ageTotals){
+  
+  outDf <- matrix(NA,nrow=numberOfSamples, ncol = length(ageVector))
+  
+  
+  for (i in 1:numberOfSamples){
+    randomNumber <- floor(runif(1, min = 1, max = nrow(mcmcMatrix)))
+    
+    lambdaSample <- mcmcMatrix[randomNumber,2]
+    deltaSample <- mcmcMatrix[randomNumber,1]
+    
+    newRow <- (lambdaSample / (lambdaSample+deltaSample)) *(1 - exp(-ageVector*(lambdaSample+deltaSample)))
+    updateRow <- c()
+    for(j in 1:length(ageTotals)){
+      randomlySampleBinomialDis <- rbinom(1,size = ageTotals[j],prob = newRow[j])
+      if(randomlySampleBinomialDis > 0){
+        result <- randomlySampleBinomialDis / ageTotals[j]
+      } else {
+        result <- 0
+      }
+      updateRow[j] <- result
+    }
+    
+    outDf[i,] <- updateRow
+  }
+  outDf
+}
+
+ageQuantiles <- function(mcmcDF){
+  quantileMatrix <- matrix(NA,nrow=ncol(mcmcDF), ncol = 3)
+  for(i in 1:ncol(mcmcDF)){
+    quantiles <- mcmcDF[,i] %>% quantile(probs=c(.5,.025,.975))
+    quantileMatrix[i,] <- quantiles
+  }
+  quantileMatrix
+}
+```
+##Reverse catalytic model
+```{r}
+
+## Load in packages
+require(tidyverse)
+require(rjags)
+require(binom)
+require(varhandle)
+require(loo)
+require(MCMCvis)
+
+################################################################################
+### Example of read in data and source functions (de-identified age-aggregated)
+################################################################################
+
+# Reading in 5-year age grouped data
+seroDatGrouped <- read_csv ## Code generated based on continuous age data. To ensure de-identification, age was aggregated 
+
+fiveYearAgeTotals <- seroDatGrouped$total
+
+###################
+### define model
+###################
+
+jcode <- "model{ 
+for (i in 1:length(n)){
+
+n.pos[i] ~ dbin(seropos_est[i],n[i]) 
+
+#reverse catalytic model
+seropos_est[i] = (lambda / (lambda + delta)) * (1-exp(-(lambda+delta)*age[i])) 
+
+## #calculate likelihood (used for WAIC)
+loglik[i] <- logdensity.bin(n.pos[i],seropos_est[i],n[i]) 
+}
+# Define priors
+lambda ~ dunif(0,0.5)
+delta ~ dunif(0,10)
+}"
+
+################################################################################
+# Running the model
+################################################################################
+
+## Number of model itterations
+mcmc.length=20000 
+
+## Specify my data
+jdat <- list(n.pos= seroDatGrouped$seropositive,
+             age=seroDatGrouped$midpoint,
+             n=seroDatGrouped$total)
+
+jmod = jags.model(textConnection(jcode), data=jdat, n.chains=4, n.adapt=5000)
+update(jmod)
+jpos = coda.samples(jmod, c("lambda","delta","loglik"), n.iter=mcmc.length)
+
+plot(jpos) ## Check convergence of all chains
+
+MCMCsummary(jpos, round = 2) ## Check ESS and Rhat
+summary(jpos)
+
+#convert mcmc.list to a matrix
+mcmcMatrix <- as.matrix(jpos)
+
+# Plotting posterior distributions of all parameters
+mcmcDF <- as_tibble(mcmcMatrix)
+mcmcDF %>%
+  gather() %>%
+  ggplot(aes(value)) +
+  facet_wrap(~ key, scales = "free") +
+  geom_density()
+
+#remove burn in
+jpos <- window(jpos, start=10000)
+plot(jpos)
+MCMCsummary(jpos, round = 2)
+summary(jpos)
+
+# calculate the DIC 
+dic.samples(jmod, n.iter = mcmc.length)
+
+## extract log liklihood
+logLik <- mcmcMatrix[,3:2152]
+
+## Caclulate WAIC and LOO from loo package
+waic <- waic(logLik)
+waic
+loo <- loo(logLik)
+loo
+plot(loo,label_points = TRUE)
+
+# Get point estimates
+deltaPointEst <- mcmcMatrix[,"delta"] %>% quantile(probs=c(.5,.025,.975))
+lambdaPointEst <- mcmcMatrix[,"lambda"] %>% quantile(probs=c(.5,.025,.975))
+
+################################################################################
+## Get data in correct format for plotting
+## Sample from mcmc chains for credible intervals
+## Add sampling uncertainty
+################################################################################
+
+ageVector = 0:80
+numberOfSamples = 1000
+outDf <- matrix(NA,nrow=numberOfSamples, ncol = length(ageVector))
+midpoints <- seroDatGrouped$midpoint
+
+
+## 1. Sample from mcmc chain to get 95% credible intervals (model uncertainty)
+
+randomlySampleMcmcChainModelUncertainty <- mcmcModelRandomSampler(1000,mcmcMatrix,ageVector)
+# for each column in the matrix get quantiles by age
+ageQuantilesModelUncertainty <- ageQuantiles(randomlySampleMcmcChainModelUncertainty)
+
+## Create a df with model uncertainty
+df_upperLower = data.frame(
+  midpoint = ageVector,
+  mean = (lambdaPointEst[1] / (lambdaPointEst[1]+deltaPointEst[1])) *(1 - exp(-ageVector*(lambdaPointEst[1]+deltaPointEst[1]))),
+  upper = ageQuantilesModelUncertainty[,3],
+  lower = ageQuantilesModelUncertainty[,2]
+)
+
+## 2. Sample uncertainty - accounts for the sample size of the underlying data
+randomlySampleMcmcChain <- mcmcRandomSampler(1000,mcmcMatrix,midpoints,fiveYearAgeTotals)
+ageQuantilesSamplingUncertainty <- ageQuantiles(randomlySampleMcmcChain)
+
+## Create a df with sample uncertainty
+df_sampling = data.frame(
+  midpoint = seroDatGrouped$midpoint,
+  mean = (lambdaPointEst[1] / (lambdaPointEst[1]+deltaPointEst[1])) *(1 - exp(-seroDatGrouped$midpoint*(lambdaPointEst[1]+deltaPointEst[1]))),
+  upper = ageQuantilesSamplingUncertainty[,3],
+  lower = ageQuantilesSamplingUncertainty[,2]
+)
+
+## Save the dataframes for plotting
+saveRDS(df_sampling,"samplingUncertaintyRevCat_5.rds")
+saveRDS(df_upperLower, "modelUncertaintyRevCat_5.rds")
+```

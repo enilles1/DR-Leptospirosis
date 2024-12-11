@@ -1,5 +1,9 @@
-#NOTE: This is the code used for the serocatalytic models presented in the manuscript. This script uses age as a continuous variable. However, for de-identification purposes, the dataset provided has age aggregated. Therefore, the provided code will need to be modified to account for this. 
-
+######## NOTE
+# This is the code used for the serocatalytic models presented in the manuscript. 
+# This script uses age as a continuous variable. 
+# However, for de-identification purposes, the dataset provided has age aggregated into a categorical variable. 
+# Therefore, the provided code will need to be modified to account for this. 
+########
 ```
 # Force of infection
 ## Catalytic model

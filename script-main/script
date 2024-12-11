@@ -1,8 +1,5 @@
----
-title: "Epidemiology of leptospirosis in the Dominican Republic"
----
 
-# Loading packages
+# Load packages
 ```{r}
 library(readr)
 library(ggplot2)
